@@ -1,29 +1,88 @@
+use std::collections::HashMap;
+
 use nom::{
     branch::alt,
-    bytes::complete::{tag, take_while1},
-    character::{
-        complete::{char, digit1, multispace0, multispace1},
-        is_digit,
-    },
-    combinator::{map_res, opt},
-    multi::separated_list0,
-    multi::{many0, separated_list1},
-    sequence::{pair, separated_pair},
+    bytes::complete::tag,
+    character::complete::{digit1, multispace1},
+    combinator::map_res,
+    multi::separated_list1,
+    sequence::{preceded, separated_pair},
     IResult,
 };
 
-type GameId = u32;
+pub struct Game {
+    id: u32,
+    pulls: Vec<Vec<Cube>>,
+}
 
-#[derive(Debug)]
-enum Cube {
+impl Game {
+    fn new(id: u32, pulls: Vec<Vec<Cube>>) -> Self {
+        Game { id, pulls }
+    }
+
+    fn is_possible(&self, bag_content: &[Cube]) -> bool {
+        let bag_content = Cube::to_hashmap(bag_content);
+
+        let impossible_pulls = self
+            .pulls
+            .iter()
+            .filter(|pull| {
+                !pull
+                    .iter()
+                    .filter(|cube| !cube.keep(&bag_content))
+                    .collect::<Vec<&Cube>>()
+                    .is_empty()
+            })
+            .collect::<Vec<&Vec<Cube>>>();
+
+        if impossible_pulls.is_empty() {
+            return true;
+        }
+        return false;
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Cube {
     Red(u32),
     Blue(u32),
     Green(u32),
 }
 
+impl Cube {
+    fn get_color(&self) -> &str {
+        match self {
+            Self::Red(_) => "red",
+            Self::Blue(_) => "blue",
+            Self::Green(_) => "green",
+        }
+    }
+
+    fn get_amount(&self) -> u32 {
+        match self {
+            Self::Red(amount) | Self::Blue(amount) | Self::Green(amount) => *amount,
+        }
+    }
+
+    fn to_hashmap(cubes: &[Cube]) -> HashMap<&str, u32> {
+        let mut hash = HashMap::new();
+        cubes.iter().for_each(|c| {
+            hash.insert(c.get_color(), c.get_amount());
+        });
+        hash
+    }
+
+    fn keep(&self, cubes: &HashMap<&str, u32>) -> bool {
+        let h_cube = cubes
+            .get(self.get_color())
+            .expect("Cube must be in hashmap");
+        self.get_amount() <= *h_cube
+    }
+}
+
 impl TryFrom<(&str, &str)> for Cube {
     type Error = ();
-    fn try_from((value, amount): (&str, &str)) -> Result<Self, Self::Error> {
+    fn try_from((amount, value): (&str, &str)) -> Result<Self, Self::Error> {
         match value {
             "red" => Ok(Self::Red(amount.parse().unwrap())),
             "blue" => Ok(Self::Blue(amount.parse().unwrap())),
@@ -33,9 +92,7 @@ impl TryFrom<(&str, &str)> for Cube {
     }
 }
 
-fn parse_cube(input: &str) -> IResult<&str, Cube> {
-    println!("PARSE CUBE");
-    dbg!(input);
+fn cube(input: &str) -> IResult<&str, Cube> {
     map_res(
         separated_pair(
             digit1,
@@ -46,38 +103,26 @@ fn parse_cube(input: &str) -> IResult<&str, Cube> {
     )(input)
 }
 
-fn parse_pulls(input: &str) -> nom::IResult<&str, Vec<Cube>> {
-    println!("PARSE PULLS");
-    dbg!(input);
-    separated_list1(tag(", "), parse_cube)(input)
+fn pulls(input: &str) -> nom::IResult<&str, Vec<Cube>> {
+    separated_list1(tag(", "), cube)(input)
 }
 
-fn process_line(line: &str) -> IResult<&str, Option<u32>> {
-    let (rest, _) = tag("Game")(line)?;
-    let (rest, _) = multispace1(rest)?;
-    let (rest, game_id) = digit1(rest)?;
-    let (rest, _) = tag(":")(rest)?;
-    let (rest, _) = multispace1(rest)?;
+fn process_line<'a>(line: &'a str, cubes: &[Cube]) -> IResult<&'a str, Option<u32>> {
+    let (line, game_id) = preceded(tag("Game "), digit1)(line)?;
+    let (line, pulls) = preceded(tag(": "), separated_list1(tag("; "), pulls))(line)?;
+    assert!(line.is_empty());
 
-    let (rest, pulls) = many0(pair(parse_pulls, opt(tag("; "))))(rest)?;
-    // let (rest, pulls) = separated_list1(tag("; "), parse_pulls)(rest)?;
-    assert!(rest.len() == 0);
-    dbg!(pulls);
-
-    Ok((
-        "",
-        Some(
-            game_id
-                .parse::<GameId>()
-                .expect("Could not convert game id"),
-        ),
-    ))
+    let game = Game::new(game_id.parse().expect("Should contain game id"), pulls);
+    match game.is_possible(cubes) {
+        true => Ok(("", Some(game.id))),
+        false => Ok(("", None)),
+    }
 }
 
-fn solve(input: &str, cubes: &[Cube]) -> u32 {
+pub fn solve(input: &str, cubes: &[Cube]) -> u32 {
     input
         .lines()
-        .filter_map(|line| process_line(line).expect("Error during parsing").1)
+        .filter_map(|line| process_line(line, cubes).expect("Error during parsing").1)
         .sum::<u32>()
 }
 
@@ -94,8 +139,27 @@ Game 4: 1 green, 3 red, 6 blue; 3 green, 6 red; 3 green, 15 blue, 14 red
 Game 5: 6 red, 1 blue, 3 green; 2 blue, 1 red, 2 green";
 
         assert_eq!(
-            solve(input, &vec![Cube::Red(12), Cube::Green(13), Cube::Blue(14)]),
+            solve(input, &[Cube::Red(12), Cube::Green(13), Cube::Blue(14)]),
             8
         )
+    }
+
+    fn prepare_hashmap() -> HashMap<&'static str, u32> {
+        let mut map = HashMap::new();
+        map.insert("red", 10);
+        map.insert("blue", 5);
+        map.insert("green", 7);
+        map
+    }
+
+    #[test]
+    fn test_keep_cube() {
+        let cube_lt = Cube::Red(8);
+        assert!(cube_lt.keep(&prepare_hashmap()));
+        let cube_eq = Cube::Red(10);
+        assert!(cube_eq.keep(&prepare_hashmap()));
+
+        let cube_gt = Cube::Red(12);
+        assert_eq!(cube_gt.keep(&prepare_hashmap()), false);
     }
 }
